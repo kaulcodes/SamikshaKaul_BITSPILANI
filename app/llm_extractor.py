@@ -30,13 +30,21 @@ def extract_data_with_llm(all_pages_lines: List[List[str]]) -> Tuple[BillData, T
     **Extraction Rules:**
     1. Extract the following fields for each line item:
        - `item_name`: Name of the service, medicine, or charge. Clean up noise.
-       - `item_quantity`: The quantity (default to 1.0 if not specified).
-       - `item_rate`: The unit price/rate.
-       - `item_amount`: The total amount for this item.
+       - `item_quantity`: The quantity (set to 0.0 if not present).
+       - `item_rate`: The unit price/rate (set to 0.0 if not present).
+       - `item_amount`: The total amount for this item (Exact value, no rounding).
     2. **Strictly exclude** headers, footers, page numbers, dates, times, and invoice metadata (like Bill No, UHID, etc.) from the line items.
     3. **Strictly exclude** Subtotals, Totals, Discounts, and Tax lines from the line items. Only extract the individual chargeable items.
-    4. If a value is missing, infer it logically (e.g., if Amount and Qty are present, Rate = Amount/Qty).
-    5. Return the output in the following **STRICT JSON format**:
+    3. **Strictly exclude** Subtotals, Totals, Discounts, and Tax lines from the line items. Only extract the individual chargeable items.
+    4. **CRITICAL RULES (Follow Strictly):**
+       - If `item_rate` is not explicitly present in the text, set it to `0.0`. **Do NOT calculate it.**
+       - If `item_quantity` is not explicitly present in the text, set it to `0.0`. **Do NOT default to 1.**
+       - `item_amount` must be extracted **EXACTLY** as present. **No rounding off allowed.**
+       - `page_type` must be exactly one of: `Bill Detail`, `Final Bill`, `Pharmacy`.
+    5. **Guardrails:**
+       - Do NOT extract dates (e.g., "12/05/2025") or Invoice Numbers as amounts.
+       - Ensure `item_amount` is a monetary value associated with the line item.
+    6. Return the output in the following **STRICT JSON format**:
 
     ```json
     {
