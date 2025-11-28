@@ -23,12 +23,6 @@ def extract_data_with_llm(all_pages_lines: List[List[str]]) -> Tuple[BillData, T
     model = genai.GenerativeModel('gemini-flash-latest')
 
     prompt = """
-    You are an expert data extraction AI. Your task is to extract bill line items from the provided OCR text of a medical bill.
-    
-    The OCR text may contain noise, headers, footers, and layout artifacts. You must identify the actual line items (medicines, services, consultations, etc.) and their details.
-    
-    **Extraction Rules:**
-    1. Extract the following fields for each line item:
     You are an expert data extractor for medical bills. Your job is to extract **every single valid medical line item** from the provided OCR text.
     
     **Scope of Extraction:**
@@ -37,9 +31,10 @@ def extract_data_with_llm(all_pages_lines: List[List[str]]) -> Tuple[BillData, T
 
     **Strict Rules for Extraction:**
     1. **Exact Values**: Extract `item_name`, `item_rate`, `item_quantity`, and `item_amount` EXACTLY as they appear in the text. Do NOT round off.
-    2. **Missing Values**: 
-       - If `item_rate` is NOT explicitly present, set it to `0.0`. Do NOT calculate it.
-       - If `item_quantity` is NOT explicitly present, set it to `0.0`. Do NOT calculate it.
+    2. **Missing Values (THE COLUMN RULE):** 
+       - **CRITICAL:** Only extract `item_rate` and `item_quantity` if they appear in their own **DEDICATED COLUMNS** (e.g., "Qty", "Rate", "MRP").
+       - If these details are only mentioned in the **Description text** (e.g., "Bed Charges @ 2000/day" or "2 days"), **DO NOT** extract them. Set them to `0.0`.
+       - If the column is missing or empty, set to `0.0`.
        - `item_amount` MUST be present.
     3. **No Double Counting**: 
        - Strictly EXCLUDE "Subtotal", "Total", "Grand Total", "Net Amount", "Category Total", "Daily Total" lines.
