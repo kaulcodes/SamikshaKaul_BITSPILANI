@@ -1,37 +1,22 @@
 from typing import List
 from PIL import Image
 import pytesseract
-from pytesseract import Output
 
 # Set the tesseract binary path if needed
-# Replace this with whatever `which tesseract` printed
-pytesseract.pytesseract.tesseract_cmd = "/opt/homebrew/bin/tesseract"
-
+# pytesseract.pytesseract.tesseract_cmd = "/usr/bin/tesseract" # Default for Linux/Render
 
 def run_ocr_on_page(image: Image.Image) -> List[str]:
     """
-    Run OCR on the given image and return a list of text lines
-    in reading order.
-    Use pytesseract.image_to_data, group by line_num, and join words.
-    Skip words with confidence < 40 or empty text.
+    Runs OCR on a single PIL Image and returns a list of strings (lines).
+    Includes preprocessing to handle noise/whitener (grayscale).
     """
-    data = pytesseract.image_to_data(image, output_type=Output.DICT)
-    lines = {}
-
-    n = len(data["text"])
-    for i in range(n):
-        text = data["text"][i]
-        conf_str = data["conf"][i]
-        try:
-            conf = int(conf_str)
-        except ValueError:
-            conf = -1
-
-        if conf < 40 or not text.strip():
-            continue
-
-        line_no = data["line_num"][i]
-        lines.setdefault(line_no, []).append(text)
-
-    line_texts = [" ".join(words) for _, words in sorted(lines.items())]
-    return line_texts
+    # Preprocessing: Convert to grayscale to handle colored backgrounds/noise better
+    image = image.convert('L')
+    
+    # Run OCR with page segmentation mode 6 (Assume a single uniform block of text)
+    # This is often better for table-like structures than default
+    text = pytesseract.image_to_string(image, config='--psm 6')
+    
+    # Split into lines and clean up
+    lines = [line.strip() for line in text.split('\n') if line.strip()]
+    return lines

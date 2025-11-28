@@ -15,7 +15,6 @@ class PageLineItems(BaseModel):
 class BillData(BaseModel):
     pagewise_line_items: List[PageLineItems]
     total_item_count: int
-    reconciled_amount: float
 
 class TokenUsage(BaseModel):
     total_tokens: int

@@ -29,49 +29,48 @@ def extract_data_with_llm(all_pages_lines: List[List[str]]) -> Tuple[BillData, T
     
     **Extraction Rules:**
     1. Extract the following fields for each line item:
-       - `item_name`: Name of the service, medicine, or charge. Clean up noise.
-       - `item_quantity`: The quantity (set to 0.0 if not present).
-       - `item_rate`: The unit price/rate (set to 0.0 if not present).
-       - `item_amount`: The total amount for this item (Exact value, no rounding).
-    2. **Strictly exclude** headers, footers, page numbers, dates, times, and invoice metadata (like Bill No, UHID, etc.) from the line items.
-    3. **Strictly exclude** Subtotals, Totals, Discounts, and Tax lines from the line items. Only extract the individual chargeable items.
-    3. **Strictly exclude** Subtotals, Totals, Discounts, and Tax lines from the line items. Only extract the individual chargeable items.
-    4. **CRITICAL RULES (Follow Strictly):**
-       - If `item_rate` is not explicitly present in the text, set it to `0.0`. **Do NOT calculate it.**
-       - If `item_quantity` is not explicitly present in the text, set it to `0.0`. **Do NOT default to 1.**
-       - `item_amount` must be extracted **EXACTLY** as present. **No rounding off allowed.**
-       - `page_type` must be exactly one of: `Bill Detail`, `Final Bill`, `Pharmacy`.
-    5. **Guardrails:**
-       - Do NOT extract dates (e.g., "12/05/2025") or Invoice Numbers as amounts.
-       - Ensure `item_amount` is a monetary value associated with the line item.
-    6. Return the output in the following **STRICT JSON format**:
+    You are an expert data extractor for medical bills. Your job is to extract **every single valid medical line item** from the provided OCR text.
+    
+    **Scope of Extraction:**
+    - Extract ALL charges including: Medicines, Consultation Fees, Investigation Charges (Lab tests, X-Rays, Scans), Bed/Room Charges, Nursing Charges, Procedure Charges, Equipment Charges, etc.
+    - Do NOT stop at medicines. If it is a charge for a service or item, extract it.
 
-    ```json
+    **Strict Rules for Extraction:**
+    1. **Exact Values**: Extract `item_name`, `item_rate`, `item_quantity`, and `item_amount` EXACTLY as they appear in the text. Do NOT round off.
+    2. **Missing Values**: 
+       - If `item_rate` is NOT explicitly present, set it to `0.0`. Do NOT calculate it.
+       - If `item_quantity` is NOT explicitly present, set it to `0.0`. Do NOT calculate it.
+       - `item_amount` MUST be present.
+    3. **No Double Counting**: 
+       - Strictly EXCLUDE "Subtotal", "Total", "Grand Total", "Net Amount", "Category Total", "Daily Total" lines.
+       - Only extract the individual line items that make up these totals.
+       - Example: If there are 4 days of Bed Charges and a "Total Bed Charges" line, extract the 4 days and IGNORE the total line.
+    4. **Exclusions**: Do NOT extract:
+       - Header/Footer info (Hospital name, address, GSTIN).
+       - Patient details (Name, Age, IPD No).
+       - Tax lines (CGST, SGST) unless they are listed as specific line items (rare).
+       - Discount lines.
+    
+    **Page Type Classification:**
+    - `Bill Detail`: Contains detailed daily breakdown of charges (Bed charges, Nursing, etc.).
+    - `Pharmacy`: Contains list of medicines/consumables.
+    - `Final Bill`: The summary page (often has "Final Bill" or "Summary" in header).
+    
+    **Output Format:**
+    Return a JSON object with this EXACT structure:
     {
-      "pagewise_line_items": [
-        {
-          "page_no": "1",
-          "page_type": "Bill Detail",
-          "bill_items": [
+        "pagewise_line_items": [
             {
-              "item_name": "Consultation",
-              "item_amount": 500.0,
-              "item_rate": 500.0,
-              "item_quantity": 1.0
+                "page_no": "1",
+                "page_type": "Bill Detail", 
+                "bill_items": [
+                    {"item_name": "...", "item_amount": 100.00, "item_rate": 0.0, "item_quantity": 0.0},
+                    ...
+                ]
             }
-          ]
-        }
-      ],
-      "total_item_count": 1,
-      "reconciled_amount": 500.0
+        ],
+        "total_item_count": 10
     }
-    ```
-    
-    - `pagewise_line_items`: A list of objects, one for each page where items were found.
-    - `page_no`: The page number as a string ("1", "2", etc.).
-    - `page_type`: One of "Bill Detail", "Final Bill", "Pharmacy".
-    - `reconciled_amount`: The sum of all `item_amount` values.
-    
     **Input OCR Text:**
     """
     
@@ -115,11 +114,10 @@ def extract_data_with_llm(all_pages_lines: List[List[str]]) -> Tuple[BillData, T
 
         return BillData(
             pagewise_line_items=pagewise,
-            total_item_count=data.get("total_item_count", 0),
-            reconciled_amount=float(data.get("reconciled_amount", 0.0))
+            total_item_count=data.get("total_item_count", 0)
         ), usage
 
     except Exception as e:
         print(f"LLM Extraction failed: {e}", flush=True)
         # Fallback
-        return BillData(pagewise_line_items=[], total_item_count=0, reconciled_amount=0.0), TokenUsage(total_tokens=0, input_tokens=0, output_tokens=0)
+        return BillData(pagewise_line_items=[], total_item_count=0), TokenUsage(total_tokens=0, input_tokens=0, output_tokens=0)
