@@ -29,8 +29,15 @@ def download_document(url: str) -> str:
             print(f"Response body: {e.response.text}", flush=True)
         raise e
 
+    import urllib.parse
+    
+    # Parse URL to get the path without query parameters
+    parsed_url = urllib.parse.urlparse(url)
+    path_url = parsed_url.path.lower()
+
     content_type = resp.headers.get("Content-Type", "").lower()
-    if "pdf" in content_type or url.lower().endswith(".pdf"):
+    
+    if "pdf" in content_type or path_url.endswith(".pdf"):
         suffix = ".pdf"
     else:
         suffix = ".png"
