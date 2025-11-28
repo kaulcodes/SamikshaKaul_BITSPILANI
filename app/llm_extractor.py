@@ -32,15 +32,19 @@ def extract_data_with_llm(all_pages_lines: List[List[str]]) -> Tuple[BillData, T
     **Strict Rules for Extraction:**
     1. **Exact Values**: Extract `item_name`, `item_rate`, `item_quantity`, and `item_amount` EXACTLY as they appear in the text. Do NOT round off.
     2. **Missing Values (THE COLUMN RULE):** 
-       - **CRITICAL:** Only extract `item_rate` and `item_quantity` if they appear in their own **DEDICATED COLUMNS** (e.g., "Qty", "Rate", "MRP").
+       - **CRITICAL:** Only extract `item_rate` and `item_quantity` if they appear in their own **DEDICATED COLUMNS** (e.g., "Qty", "Rate", "MRP", "Nos", "Charges").
+       - **Mapping:** "Nos" = `item_quantity`, "Charges" = `item_rate`.
        - If these details are only mentioned in the **Description text** (e.g., "Bed Charges @ 2000/day" or "2 days"), **DO NOT** extract them. Set them to `0.0`.
        - If the column is missing or empty, set to `0.0`.
        - `item_amount` MUST be present.
-    3. **No Double Counting**: 
+    3. **Item Name Preference**:
+       - If a line item has a **Main Header** (often uppercase/bold) and a **Sub-description** below it, extract ONLY the **Main Header** as `item_name`.
+       - Example: "BED CHARGES" (Header) vs "Economy Ward..." (Description) -> Extract "BED CHARGES".
+    4. **No Double Counting**: 
        - Strictly EXCLUDE "Subtotal", "Total", "Grand Total", "Net Amount", "Category Total", "Daily Total" lines.
        - Only extract the individual line items that make up these totals.
        - Example: If there are 4 days of Bed Charges and a "Total Bed Charges" line, extract the 4 days and IGNORE the total line.
-    4. **Exclusions**: Do NOT extract:
+    5. **Exclusions**: Do NOT extract:
        - Header/Footer info (Hospital name, address, GSTIN).
        - Patient details (Name, Age, IPD No).
        - Tax lines (CGST, SGST) unless they are listed as specific line items (rare).
