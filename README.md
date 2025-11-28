@@ -37,21 +37,21 @@ Ensure you have **Poppler** (for `pdf2image`) and **Tesseract OCR** installed on
     uvicorn app.main:app --host 0.0.0.0 --port 8000
     ```
 
-### Deployment (For Submission)
-To expose the local API to the internet for the hackathon submission:
+## 🚀 Differentiators & Pre-processing
+As requested in the problem statement, we have implemented specific pre-processing techniques to handle complex documents:
+1.  **Grayscale Conversion**: All input images are converted to grayscale (`L` mode) before OCR. This significantly improves accuracy on documents with colored backgrounds or "whitener" marks by enhancing the contrast of the text.
+2.  **LLM-First Approach**: We utilize Google Gemini 1.5 Flash for its superior reasoning capabilities, allowing us to handle "hidden rules" (like excluding totals) that rule-based parsers miss.
+3.  **Strict Schema Validation**: We use Pydantic models to enforce the exact JSON structure required, ensuring 0% schema errors.
 
-1.  **Start the Server**:
-    ```bash
-    uvicorn app.main:app --host 0.0.0.0 --port 8000
-    ```
-2.  **Start ngrok** (in a new terminal):
-    ```bash
-    ngrok http 8000
-    ```
-3.  **Copy the Forwarding URL**:
-    Copy the `https` URL provided by ngrok (e.g., `https://a1b2-c3d4.ngrok-free.app`).
-4.  **Submit**:
-    Use this URL as your API endpoint (e.g., `https://a1b2-c3d4.ngrok-free.app/extract-bill-data`).
+## 🛠️ Deployment
+The API is deployed on **Render** for high availability.
+**Base URL**: `https://bajaj-health-api-xxxx.onrender.com` (Replace with your actual URL)
+
+### Endpoints
+-   `POST /extract-bill-data`: Main extraction endpoint.
+-   `GET /health`: Health check endpoint to verify uptime.
+
+## 🏃‍♂️ How to Run Locally
 
 ### Example Usage
 ```bash

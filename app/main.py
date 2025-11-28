@@ -17,6 +17,10 @@ from app.llm_extractor import extract_data_with_llm
 app = FastAPI()
 
 
+@app.get("/health")
+def health_check():
+    return {"status": "ok", "message": "Service is healthy"}
+
 @app.post("/extract-bill-data")
 async def extract_bill_data(request: BillRequest):
     print("HIT /extract-bill-data with document:", request.document, flush=True)
