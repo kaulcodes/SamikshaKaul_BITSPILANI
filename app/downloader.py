@@ -30,6 +30,7 @@ def download_document(url: str) -> str:
         raise e
 
     import urllib.parse
+    import mimetypes
     
     # Parse URL to get the path without query parameters
     parsed_url = urllib.parse.urlparse(url)
@@ -37,14 +38,24 @@ def download_document(url: str) -> str:
 
     content_type = resp.headers.get("Content-Type", "").lower()
     
+    # 1. Try to guess extension from Content-Type
+    guessed_ext = mimetypes.guess_extension(content_type.split(";")[0].strip())
+    
+    # 2. Determine suffix
     if "pdf" in content_type or path_url.endswith(".pdf"):
         suffix = ".pdf"
+    elif guessed_ext:
+        suffix = guessed_ext
+    elif "." in path_url:
+        # 3. Fallback to URL extension
+        suffix = os.path.splitext(path_url)[1]
     else:
+        # 4. Final fallback
         suffix = ".png"
 
     fd, path = tempfile.mkstemp(suffix=suffix)
     with os.fdopen(fd, "wb") as f:
         f.write(resp.content)
 
-    print(f"Saved remote document to temp file: {path}", flush=True)
+    print(f"Saved remote document to temp file: {path} (detected type: {suffix})", flush=True)
     return path
