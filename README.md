@@ -37,11 +37,25 @@ Ensure you have **Poppler** (for `pdf2image`) and **Tesseract OCR** installed on
     uvicorn app.main:app --host 0.0.0.0 --port 8000
     ```
 
-### Example Usage
-You can test the API using `curl`. Note that for the Datathon, the endpoint is typically exposed via ngrok (e.g., `https://<random>.ngrok-free.dev/extract-bill-data`).
+### Deployment (For Submission)
+To expose the local API to the internet for the hackathon submission:
 
+1.  **Start the Server**:
+    ```bash
+    uvicorn app.main:app --host 0.0.0.0 --port 8000
+    ```
+2.  **Start ngrok** (in a new terminal):
+    ```bash
+    ngrok http 8000
+    ```
+3.  **Copy the Forwarding URL**:
+    Copy the `https` URL provided by ngrok (e.g., `https://a1b2-c3d4.ngrok-free.app`).
+4.  **Submit**:
+    Use this URL as your API endpoint (e.g., `https://a1b2-c3d4.ngrok-free.app/extract-bill-data`).
+
+### Example Usage
 ```bash
-curl -X POST "http://localhost:8000/extract-bill-data" \
+curl -X POST "https://your-ngrok-url.ngrok-free.app/extract-bill-data" \
      -H "Content-Type: application/json" \
      -d '{"document": "https://example.com/sample_bill.pdf"}'
 ```
