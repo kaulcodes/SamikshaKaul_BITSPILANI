@@ -1,122 +1,173 @@
 import os
+import logging
 import json
+import re
 import google.generativeai as genai
-from typing import List, Dict, Tuple
-from app.schemas import PageLineItems, BillItem, BillData, TokenUsage
+from typing import List, Tuple
+from app.schemas import PageLineItems, BillItem, BillData, TokenUsage, PageTypeEnum
 
 # Configure Gemini
-# Expects GEMINI_API_KEY to be set in environment variables
 genai.configure(api_key=os.environ.get("GEMINI_API_KEY"))
 
-def extract_data_with_llm(all_pages_lines: List[List[str]]) -> Tuple[BillData, TokenUsage]:
+import asyncio
+from fastapi.concurrency import run_in_threadpool
+
+logger = logging.getLogger(__name__)
+
+async def extract_data_with_llm(all_pages_lines: List[List[str]]) -> Tuple[BillData, TokenUsage]:
     """
-    Uses Gemini to extract structured bill data from OCR text.
-    Concatenates all pages and sends a single prompt.
+    Uses Gemini to extract structured bill data.
     """
+    # OPTIMIZATION: Process in larger chunks to maintain context (e.g., table headers)
+    CHUNK_SIZE = 2 
+    chunks = []
     
-    # Concatenate text with page markers
-    full_text = ""
-    for idx, lines in enumerate(all_pages_lines, start=1):
-        page_text = "\n".join(lines)
-        full_text += f"--- PAGE {idx} ---\n{page_text}\n\n"
+    for i in range(0, len(all_pages_lines), CHUNK_SIZE):
+        chunk_pages = all_pages_lines[i:i + CHUNK_SIZE]
+        chunks.append((i + 1, chunk_pages))
 
-    model = genai.GenerativeModel('gemini-flash-latest')
+    logger.info(f"Splitting {len(all_pages_lines)} pages into {len(chunks)} chunks.")
 
-    prompt = """
-    You are an expert data extractor for medical bills. Your job is to extract **every single valid medical line item** from the provided OCR text.
-    
-    **Scope of Extraction:**
-    - Extract ALL charges including: Medicines, Consultation Fees, Investigation Charges (Lab tests, X-Rays, Scans), Bed/Room Charges, Nursing Charges, Procedure Charges, Equipment Charges, etc.
-    - Do NOT stop at medicines. If it is a charge for a service or item, extract it.
+    def process_chunk(start_idx: int, pages: List[List[str]]) -> Tuple[BillData, TokenUsage]:
+        full_text = ""
+        for idx, lines in enumerate(pages, start=start_idx):
+            page_text = "\n".join(lines)
+            full_text += f"--- PAGE {idx} ---\n{page_text}\n\n"
 
-    **Strict Rules for Extraction:**
-    1. **Exact Values**: Extract `item_name`, `item_rate`, `item_quantity`, and `item_amount` EXACTLY as they appear in the text. Do NOT round off.
-    2. **Missing Values (THE COLUMN RULE):** 
-       - **CRITICAL:** Only extract `item_rate` and `item_quantity` if they appear in their own **DEDICATED COLUMNS** (e.g., "Qty", "Rate", "MRP", "Nos", "Charges").
-       - **Mapping:** "Nos" = `item_quantity`, "Charges" = `item_rate`.
-       - If these details are only mentioned in the **Description text** (e.g., "Bed Charges @ 2000/day" or "2 days"), **DO NOT** extract them. Set them to `0.0`.
-       - If the column is missing or empty, set to `0.0`.
-       - `item_amount` MUST be present.
-    3. **Item Name Preference**:
-       - If a line item has a **Main Header** (often uppercase/bold) and a **Sub-description** below it, extract ONLY the **Main Header** as `item_name`.
-       - Example: "BED CHARGES" (Header) vs "Economy Ward..." (Description) -> Extract "BED CHARGES".
-    4. **No Double Counting**: 
-       - Strictly EXCLUDE "Subtotal", "Total", "Grand Total", "Net Amount", "Category Total", "Daily Total" lines.
-       - Only extract the individual line items that make up these totals.
-       - Example: If there are 4 days of Bed Charges and a "Total Bed Charges" line, extract the 4 days and IGNORE the total line.
-    5. **Exclusions**: Do NOT extract:
-       - Header/Footer info (Hospital name, address, GSTIN).
-       - Patient details (Name, Age, IPD No).
-       - Tax lines (CGST, SGST) unless they are listed as specific line items (rare).
-       - Discount lines.
-    
-    **Page Type Classification:**
-    - `Bill Detail`: Contains detailed daily breakdown of charges (Bed charges, Nursing, etc.).
-    - `Pharmacy`: Contains list of medicines/consumables.
-    - `Final Bill`: The summary page (often has "Final Bill" or "Summary" in header).
-    
-    **Output Format:**
-    Return a JSON object with this EXACT structure:
-    {
-        "pagewise_line_items": [
-            {
-                "page_no": "1",
-                "page_type": "Bill Detail", 
-                "bill_items": [
-                    {"item_name": "...", "item_amount": 100.00, "item_rate": 0.0, "item_quantity": 0.0},
-                    ...
-                ]
-            }
-        ],
-        "total_item_count": 10
-    }
-    **Input OCR Text:**
-    """
-    
-    full_prompt = prompt + "\n" + full_text
-
-    try:
-        response = model.generate_content(full_prompt)
-        response_text = response.text
+        model = genai.GenerativeModel('gemini-1.5-flash-latest')
         
-        # Clean up Markdown code blocks if present
-        if "```json" in response_text:
-            response_text = response_text.split("```json")[1].split("```")[0]
-        elif "```" in response_text:
-            response_text = response_text.split("```")[1].split("```")[0]
+        # --- THE SNIPER PROMPT ---
+        prompt = """
+        You are an API backend for a medical bill processor. 
+        Your ONLY GOAL is to convert the OCR text into strict JSON.
+
+        **CRITICAL EXTRACTION RULES (STRICT COMPLIANCE REQUIRED):**
+
+        1. **NO DOUBLE COUNTING:** - IGNORE lines that are totals or subtotals (e.g., "Total", "Subtotal", "Net Amount", "Grand Total").
+           - IGNORE "Brought Forward" or "Carried Over" amounts.
+           - ONLY extract the individual line items that sum up to the total.
+
+        2. **NUMERIC FORMATTING:**
+           - OUTPUT RAW NUMBERS ONLY. No symbols ($ , Rs ₹).
+           - Example: Return `1200.50`, NOT `Rs. 1,200.50`.
+           - If a value is missing or illegible, return `0.0`.
+
+        3. **PAGE CLASSIFICATION (Enum Strictness):**
+           - If the page lists medicines/drugs -> "Pharmacy"
+           - If the page shows the final Grand Total/Summary -> "Final Bill"
+           - Otherwise -> "Bill Detail"
+
+        4. **HANDWRITING/NOISE:**
+           - If text is handwritten (common in Pharmacy bills), infer the medicine name and price.
+           - If you are unsure of the price, set it to `0.0`. Do not hallucinate.
+
+        **JSON OUTPUT FORMAT:**
+        {
+            "pagewise_line_items": [
+                {
+                    "page_no": "1", 
+                    "page_type": "Bill Detail",
+                    "bill_items": [
+                        {
+                            "item_name": "Consultation Fee", 
+                            "item_amount": 500.0, 
+                            "item_rate": 500.0, 
+                            "item_quantity": 1.0
+                        }
+                    ]
+                }
+            ],
+            "total_item_count": 1
+        }
+        """
+        
+        full_prompt = prompt + "\n\n**INPUT OCR TEXT:**\n" + full_text
+
+        try:
+            # Set temperature to 0 for maximum deterministic behavior
+            response = model.generate_content(
+                full_prompt, 
+                generation_config=genai.types.GenerationConfig(temperature=0.0)
+            )
             
-        data = json.loads(response_text)
-        
-        # Validate and convert to Pydantic models
-        pagewise = []
-        for p in data.get("pagewise_line_items", []):
-            items = []
-            for i in p.get("bill_items", []):
-                items.append(BillItem(
-                    item_name=i["item_name"],
-                    item_amount=float(i["item_amount"]),
-                    item_rate=float(i["item_rate"]),
-                    item_quantity=float(i["item_quantity"])
+            # CLEANUP JSON RESPONSE
+            response_text = response.text.strip()
+            # Remove Markdown code blocks if present
+            if "```" in response_text:
+                response_text = re.sub(r"```json|```", "", response_text).strip()
+                
+            data = json.loads(response_text)
+            
+            pagewise = []
+            calculated_total_count = 0
+
+            for p in data.get("pagewise_line_items", []):
+                items = []
+                for i in p.get("bill_items", []):
+                    # Schema validation happens here automatically via Pydantic
+                    valid_item = BillItem(
+                        item_name=str(i.get("item_name", "Unknown")),
+                        item_amount=i.get("item_amount", 0.0),
+                        item_rate=i.get("item_rate", 0.0),
+                        item_quantity=i.get("item_quantity", 0.0)
+                    )
+                    items.append(valid_item)
+                
+                calculated_total_count += len(items)
+                
+                pagewise.append(PageLineItems(
+                    page_no=str(p.get("page_no", str(start_idx))),
+                    page_type=p.get("page_type", "Bill Detail"),
+                    bill_items=items
                 ))
-            pagewise.append(PageLineItems(
-                page_no=str(p["page_no"]),
-                page_type=p.get("page_type", "Bill Detail"),
-                bill_items=items
-            ))
             
-        # Extract usage metadata if available
-        usage = TokenUsage(total_tokens=0, input_tokens=0, output_tokens=0)
-        if response.usage_metadata:
-            usage.total_tokens = response.usage_metadata.total_token_count
-            usage.input_tokens = response.usage_metadata.prompt_token_count
-            usage.output_tokens = response.usage_metadata.candidates_token_count
+            # Token Usage Tracking
+            usage = TokenUsage(total_tokens=0, input_tokens=0, output_tokens=0)
+            if response.usage_metadata:
+                usage.total_tokens = response.usage_metadata.total_token_count
+                usage.input_tokens = response.usage_metadata.prompt_token_count
+                usage.output_tokens = response.usage_metadata.candidates_token_count
 
-        return BillData(
-            pagewise_line_items=pagewise,
-            total_item_count=data.get("total_item_count", 0)
-        ), usage
+            return BillData(
+                pagewise_line_items=pagewise,
+                total_item_count=calculated_total_count
+            ), usage
 
-    except Exception as e:
-        print(f"LLM Extraction failed: {e}", flush=True)
-        # Fallback
-        return BillData(pagewise_line_items=[], total_item_count=0), TokenUsage(total_tokens=0, input_tokens=0, output_tokens=0)
+        except json.JSONDecodeError:
+            logger.error(f"LLM produced invalid JSON for chunk {start_idx}")
+            return BillData(pagewise_line_items=[], total_item_count=0), TokenUsage(total_tokens=0, input_tokens=0, output_tokens=0)
+        except Exception as e:
+            logger.error(f"LLM Chunk Extraction failed for chunk {start_idx}: {str(e)}")
+            # Return empty data instead of crashing the whole server
+            return BillData(pagewise_line_items=[], total_item_count=0), TokenUsage(total_tokens=0, input_tokens=0, output_tokens=0)
+
+    # PARALLEL EXECUTION
+    # Using semaphore to prevent hitting Gemini Rate Limits (RPM)
+    semaphore = asyncio.Semaphore(5) 
+
+    async def safe_process(start_idx, pages):
+        async with semaphore:
+            return await run_in_threadpool(process_chunk, start_idx, pages)
+
+    tasks = [safe_process(start_idx, pages) for start_idx, pages in chunks]
+    results = await asyncio.gather(*tasks)
+
+    # AGGREGATION
+    final_pagewise_items = []
+    final_total_count = 0
+    final_usage = TokenUsage(total_tokens=0, input_tokens=0, output_tokens=0)
+
+    for bill_data, usage in results:
+        final_pagewise_items.extend(bill_data.pagewise_line_items)
+        final_total_count += bill_data.total_item_count
+        final_usage.total_tokens += usage.total_tokens
+        final_usage.input_tokens += usage.input_tokens
+        final_usage.output_tokens += usage.output_tokens
+
+    # Sort results by page number to ensure JSON order is correct
+    final_pagewise_items.sort(key=lambda x: int(x.page_no) if x.page_no.isdigit() else 0)
+
+    return BillData(
+        pagewise_line_items=final_pagewise_items,
+        total_item_count=final_total_count
+    ), final_usage

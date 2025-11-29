@@ -15,7 +15,7 @@ from app.schemas import (
 from app.downloader import download_document
 from app.pdf_utils import load_document_pages
 from app.ocr_engine import run_ocr_on_page
-from app.llm_extractor import extract_data_with_llm
+from app.vision_extractor import extract_data_with_llm
 
 # Setup Logger
 logging.basicConfig(level=logging.INFO)
@@ -45,24 +45,46 @@ async def log_requests(request: Request, call_next):
 def health_check():
     return {"status": "ok", "message": "Service is healthy"}
 
+@app.post("/health")
+async def health_check_post(request: BillRequest):
+    return {"status": "alive", "message": "Ready to process"}
+
 @app.post("/extract-bill-data")
 async def extract_bill_data(request: BillRequest):
     logger.info(f"Processing document: {request.document}")
+    return await process_extraction(request.document)
 
+from urllib.parse import urlencode
+
+@app.get("/extract-bill-data")
+async def extract_bill_data_get(request: Request):
+    params = dict(request.query_params)
+    document = params.pop("document", None)
+    
+    if not document:
+        return {"is_success": False, "message": "Missing 'document' query parameter."}
+
+    # Reconstruct the full URL if there are extra params (like Azure SAS tokens)
+    if params:
+        # Check if the document URL already has query params
+        separator = "&" if "?" in document else "?"
+        # Re-append the stripped parameters, properly encoded
+        extra_params = urlencode(params)
+        document = f"{document}{separator}{extra_params}"
+
+    logger.info(f"Processing document (GET): {document}")
+    return await process_extraction(document)
+
+async def process_extraction(document_url: str):
     try:
         # download and load pages
-        path = download_document(request.document)
+        path = download_document(document_url)
         pages = load_document_pages(path)
         logger.info(f"Loaded {len(pages)} page(s) from document")
 
-        all_pages_lines = []
-        for idx, img in enumerate(pages, start=1):
-            lines = run_ocr_on_page(img)
-            all_pages_lines.append(lines)
-            if idx == 1:
-                logger.info(f"First page sample: {lines[:3]}")
-
-        bill_data, token_usage = extract_data_with_llm(all_pages_lines)
+        # --- VISION EXTRACTION (No OCR needed) ---
+        # We pass the PIL images directly to Gemini 1.5 Flash
+        bill_data, token_usage = await extract_data_with_llm(pages)
 
         response = BillResponseSuccess(
             is_success=True,

@@ -1,8 +1,8 @@
 fastapi
-uvicorn[standard]
+uvicorn
 pydantic
+pillow
+google-generativeai
 requests
 pdf2image
-Pillow
 pytesseract
-google-generativeai
