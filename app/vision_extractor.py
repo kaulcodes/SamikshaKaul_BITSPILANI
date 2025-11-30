@@ -63,6 +63,7 @@ async def extract_data_with_llm(pages: List[Image.Image]) -> Tuple[BillData, Tok
         model = genai.GenerativeModel('gemini-flash-latest')
         
         # --- THE VISION PROMPT ---
+        # --- THE UNIVERSAL PROMPT (Medical + Generic + Edge Cases) ---
         prompt = """
         You are an expert data extractor for ALL types of invoices and bills (Medical, Retail, Generic, Repair, etc.). 
         Analyze the provided image and extract structured data.
@@ -111,7 +112,6 @@ async def extract_data_with_llm(pages: List[Image.Image]) -> Tuple[BillData, Tok
             "total_item_count": 1
         }
         """
-
         # Retry logic for 429 Rate Limits
         max_retries = 2
         base_delay = 2
@@ -155,7 +155,7 @@ async def extract_data_with_llm(pages: List[Image.Image]) -> Tuple[BillData, Tok
                     calculated_count += len(items)
                     
                     # Ensure page_no is the one we assigned if missing
-                    p_no = str(p.get("page_no", str(page_num)))
+                    p_no = str(page_num)
                     
                     pagewise.append(PageLineItems(
                         page_no=p_no,
