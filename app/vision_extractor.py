@@ -17,6 +17,31 @@ genai.configure(api_key=os.environ.get("GEMINI_API_KEY"))
 import asyncio
 from fastapi.concurrency import run_in_threadpool
 
+def repair_bill_items(bill_data: BillData) -> BillData:
+    """
+    Safely repairs missing values using basic math (Rate * Qty = Amount).
+    This fixes '0.0' gaps without calling the AI again.
+    """
+    for page in bill_data.pagewise_line_items:
+        for item in page.bill_items:
+            # Case 1: Missing Amount, but we have Rate & Qty
+            if item.item_amount == 0.0 and item.item_rate > 0 and item.item_quantity > 0:
+                item.item_amount = round(item.item_rate * item.item_quantity, 2)
+                
+            # Case 2: Missing Rate, but we have Amount & Qty
+            elif item.item_rate == 0.0 and item.item_amount > 0 and item.item_quantity > 0:
+                item.item_rate = round(item.item_amount / item.item_quantity, 2)
+
+            # Case 3: Missing Quantity (Default to 1 if Amount matches Rate)
+            elif item.item_quantity == 0.0 and item.item_amount > 0 and item.item_rate > 0:
+                if abs(item.item_amount - item.item_rate) < 0.1:
+                    item.item_quantity = 1.0
+                else:
+                    # Calculate implied quantity
+                    item.item_quantity = round(item.item_amount / item.item_rate, 2)
+
+    return bill_data
+    
 logger = logging.getLogger(__name__)
 
 async def extract_data_with_llm(pages: List[Image.Image]) -> Tuple[BillData, TokenUsage]:
@@ -39,25 +64,28 @@ async def extract_data_with_llm(pages: List[Image.Image]) -> Tuple[BillData, Tok
         
         # --- THE VISION PROMPT ---
         prompt = """
-        You are an expert medical bill data extractor. 
-        Analyze the provided image of the document and extract structured data.
+        You are an expert data extractor for ALL types of invoices and bills (Medical, Retail, Generic, Repair, etc.). 
+        Analyze the provided image and extract structured data.
 
-        **CRITICAL VISUAL INSTRUCTIONS:**
-        1. **Handwriting & Noise:** - Look carefully at handwritten text (common in Pharmacy bills). 
-           - If a number is overwritten or unclear, use your best judgment. If illegible, set to 0.0.
-           - Ignore "Whitener" marks or scribbles that cross out text.
-        
-        2. **Table Structure:** - Visually align the columns. Do not mix up 'Rate' and 'Amount'.
-           - 'Rate' is usually the unit price. 'Amount' is usually Rate * Qty.
+        **CRITICAL INSTRUCTIONS:**
+        1. **EXTRACT EVERYTHING:** - Do not limit yourself to "Medical" items. If it looks like a line item with a price, EXTRACT IT.
+           - Extract items from bike repairs, grocery receipts, hospital bills, or handwritten notes equally.
 
-        3. **Page Classification (Strict):**
-           - If the page contains a list of medicines/drugs -> "Pharmacy"
-           - If the page shows the "Grand Total" or "Net Payable" -> "Final Bill"
-           - Otherwise -> "Bill Detail"
+        2. **SIDE-BY-SIDE RECEIPTS (The "Merge" Rule):**
+           - If the image contains multiple receipts (e.g., left and right), MERGE them into a single list.
+           - Do not create separate page entries. All items belong to this single PDF page.
+
+        3. **HANDWRITING & NOISE:** - Look carefully at handwritten text. If a number is overwritten, use your best judgment.
+           - If you are >50% sure, extract it. Do not return 0.0 unless it is completely illegible.
 
         4. **NO DOUBLE COUNTING:**
            - Do NOT extract rows labeled "Total", "Subtotal", "Brought Forward", or "Carried Over".
-           - Only extract the specific line items (medicines, services, charges).
+           - Only extract the specific line items.
+
+        5. **PAGE CLASSIFICATION:**
+           - Default to "Bill Detail" for most pages.
+           - Only use "Pharmacy" if you explicitly see drug names.
+           - Only use "Final Bill" if it is a summary page with NO individual items.
 
         **JSON OUTPUT FORMAT:**
         Return ONLY valid JSON matching this structure:
@@ -65,12 +93,12 @@ async def extract_data_with_llm(pages: List[Image.Image]) -> Tuple[BillData, Tok
             "pagewise_line_items": [
                 {
                     "page_no": "1", 
-                    "page_type": "Bill Detail",
+                    "page_type": "Bill Detail", 
                     "bill_items": [
                         {
-                            "item_name": "Consultation Fee", 
-                            "item_amount": 500.0, 
-                            "item_rate": 500.0, 
+                            "item_name": "Item Name", 
+                            "item_amount": 100.0, 
+                            "item_rate": 100.0, 
                             "item_quantity": 1.0
                         }
                     ]
@@ -157,11 +185,15 @@ async def extract_data_with_llm(pages: List[Image.Image]) -> Tuple[BillData, Tok
                 return BillData(pagewise_line_items=[], total_item_count=0), TokenUsage(total_tokens=0, input_tokens=0, output_tokens=0)
 
     # --- PARALLEL EXECUTION ---
-    # Limit concurrency to 5 to avoid hitting Gemini Rate Limits
-    semaphore = asyncio.Semaphore(5)
+   # OPTIMIZED THROTTLING
+    # 12 pages / 3 concurrent = 4 batches.
+    # 4 batches * 2s sleep = 8s total wait (We save 16 seconds vs the old code!)
+    semaphore = asyncio.Semaphore(3) 
 
     async def safe_process(page_num, img):
         async with semaphore:
+            # Sleep 2s is enough to stay under 10 RPM because processing takes time too
+            await asyncio.sleep(2) 
             return await run_in_threadpool(process_page_vision, page_num, img)
 
     tasks = [safe_process(page_num, img) for page_num, img in chunks]
@@ -182,7 +214,13 @@ async def extract_data_with_llm(pages: List[Image.Image]) -> Tuple[BillData, Tok
     # Sort pages to keep JSON orderly
     final_pagewise.sort(key=lambda x: int(x.page_no) if x.page_no.isdigit() else 0)
 
-    return BillData(
+    # 1. Create the Raw Data
+    raw_data = BillData(
         pagewise_line_items=final_pagewise,
         total_item_count=final_total
-    ), final_usage
+    )
+
+    # 2. Run the "Math Repair" Safety Net
+    final_data = repair_bill_items(raw_data)
+
+    return final_data, final_usage
