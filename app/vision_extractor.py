@@ -78,11 +78,15 @@ async def extract_data_with_llm(pages: List[Image.Image]) -> Tuple[BillData, Tok
         3. **HANDWRITING & NOISE:** - Look carefully at handwritten text. If a number is overwritten, use your best judgment.
            - If you are >50% sure, extract it. Do not return 0.0 unless it is completely illegible.
 
-        4. **NO DOUBLE COUNTING:**
+        4. **QUANTITY LOGIC (Crucial):**
+           - If Quantity is written as 'AxB' (e.g., '3x10' or '10x15'), extract ONLY the first number (A) as the `item_quantity`.
+           - Example: "3x10" -> Extract 3.0.
+
+        5. **NO DOUBLE COUNTING:**
            - Do NOT extract rows labeled "Total", "Subtotal", "Brought Forward", or "Carried Over".
            - Only extract the specific line items.
 
-        5. **PAGE CLASSIFICATION:**
+        6. **PAGE CLASSIFICATION:**
            - Default to "Bill Detail" for most pages.
            - Only use "Pharmacy" if you explicitly see drug names.
            - Only use "Final Bill" if it is a summary page with NO individual items.
