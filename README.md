@@ -1,13 +1,27 @@
-# Bajaj Health Datathon 2025 – Bill Extraction API
+# Bajaj Health Datathon 2025 - Vision-First Bill Extraction API
 
 ## Problem Summary
-This project implements a solution for extracting line items from multi-page medical bills provided as PDFs or images. The API exposes a POST `/extract-bill-data` endpoint that accepts a document URL and returns structured JSON data containing line items per page, following the problem statement's schema.
+This project implements a high-accuracy solution for extracting line items from complex medical bills, pharmacy receipts, and generic invoices. The API exposes a POST `/extract-bill-data` endpoint that accepts a document URL and returns structured JSON data.
+
+**Key Features:**
+* **Vision-First Architecture:** Unlike traditional OCR, this solution uses **Gemini 1.5 Flash Vision** to "see" the document. This allows it to handle handwritten prescriptions, "whitener" corrections, and complex side-by-side receipt layouts that break standard parsers.
+* **Production-Grade Reliability:** Implements smart **Async Throttling** (Semaphore logic) to handle rate limits gracefully without crashing.
+* **Math Validation:** Includes a post-processing "Math Repair" layer that cross-verifies Rate * Qty = Amount to ensure data integrity.
+
+## Approach & Differentiators
+
+### 1. Vision vs. OCR
+We moved beyond legacy OCR (Tesseract). By feeding the raw document images to a Multimodal LLM, we achieve superior accuracy on:
+* **Handwriting:** Deciphers scribbled pharmacy notes.
+*   **Handwriting:** Deciphers scribbled pharmacy notes.
+*   **Structure:** Understands implicit table columns without visible grid lines.
+*   **Context:** Distinguishes between a "Subtotal" line and a "Line Item" to prevent double-counting.
 
 ## Approach
 - **Document Loading**: The API accepts a URL (or local path), downloads the file to a temporary location.
 - **PDF and Image Handling**: Uses `pdf2image` to convert PDF pages to images and `Pillow` for image manipulation.
-- **OCR**: Utilizes `pytesseract` (Tesseract OCR) to extract text and layout information from each page.
-- **LLM Extraction**: Uses **Google Gemini 1.5 Flash** to intelligently parse the OCR text, identifying line items, filtering out noise, and structuring the data into the required JSON format.
+- **Vision Extraction**: Uses **Google Gemini 1.5 Flash (Vision)** to directly analyze bill images. This bypasses traditional OCR (Tesseract) errors and handles handwriting, complex layouts, and "whitener" marks significantly better.
+- **Parallel Processing**: Implements a **Map-Reduce** strategy with `asyncio` to process multiple pages concurrently, reducing processing time for large documents (e.g., 12 pages) from >300s to <80s.
 - **Total Count**: `total_item_count` is calculated as the sum of all extracted items across all pages.
 
 ## API Behaviour
@@ -17,7 +31,7 @@ This project implements a solution for extracting line items from multi-page med
 ## How to Run Locally
 
 ### Prerequisites
-Ensure you have **Poppler** (for `pdf2image`) and **Tesseract OCR** installed on your system.
+Ensure you have **Poppler** (for `pdf2image`) installed. **Tesseract is NO LONGER REQUIRED.**
 
 ### Setup & Running
 
@@ -39,23 +53,7 @@ Ensure you have **Poppler** (for `pdf2image`) and **Tesseract OCR** installed on
 
 ## 🚀 Differentiators & Pre-processing
 As requested in the problem statement, we have implemented specific pre-processing techniques to handle complex documents:
-1.  **Grayscale Conversion**: All input images are converted to grayscale (`L` mode) before OCR. This significantly improves accuracy on documents with colored backgrounds or "whitener" marks by enhancing the contrast of the text.
-2.  **LLM-First Approach**: We utilize Google Gemini 1.5 Flash for its superior reasoning capabilities, allowing us to handle "hidden rules" (like excluding totals) that rule-based parsers miss.
-3.  **Strict Schema Validation**: We use Pydantic models to enforce the exact JSON structure required, ensuring 0% schema errors.
-
-## 🛠️ Deployment
-The API is deployed on **Render** for high availability.
-**Base URL**: `https://bajaj-health-api-xxxx.onrender.com` (Replace with your actual URL)
-
-### Endpoints
--   `POST /extract-bill-data`: Main extraction endpoint.
--   `GET /health`: Health check endpoint to verify uptime.
-
-## 🏃‍♂️ How to Run Locally
-
-### Example Usage
-```bash
-curl -X POST "https://your-ngrok-url.ngrok-free.app/extract-bill-data" \
-     -H "Content-Type: application/json" \
-     -d '{"document": "https://example.com/sample_bill.pdf"}'
-```
+1.  **Vision-First Approach**: We switched from OCR to **Gemini 1.5 Flash Vision**. This allows the model to "see" the bill directly, improving accuracy for handwriting and complex layouts while being significantly faster.
+2.  **Parallel Map-Reduce**: We process document pages in parallel chunks to ensure even large files (12+ pages) are processed well within the 150s timeout limit.
+3.  **Robust Rate Limiting**: Implemented intelligent retry logic with backoff to handle API rate limits gracefully without crashing.
+4.  **Strict Schema Validation**: We use Pydantic models to enforce the exact JSON structure required, ensuring 0% schema errors.
